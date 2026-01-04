@@ -1,0 +1,131 @@
+name: Sync
+
+# 北京时间凌晨2点 = UTC时间18:00
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      json_changed: ${{ steps.check_changes.outputs.changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0  # 获取完整历史，用于比较
+
+      - name: Configure git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/6ool/holiday-cn.git
+          git fetch upstream
+
+      - name: Get current commit
+        id: before_commit
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Sync from upstream
+        run: |
+          echo "🔄 同步上游代码..."
+          git fetch upstream
+          git reset --hard upstream/master
+          echo "✅ 上游同步完成"
+
+      - name: Get new commit
+        id: after_commit
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Check JSON changes
+        id: check_changes
+        run: |
+          if [ "${{ steps.before_commit.outputs.sha }}" != "${{ steps.after_commit.outputs.sha }}" ]; then
+            # 检查是否有 JSON 文件变更
+            if git diff --name-only ${{ steps.before_commit.outputs.sha }} ${{ steps.after_commit.outputs.sha }} | grep -E "\.json$"; then
+              echo "changes=true" >> $GITHUB_OUTPUT
+              echo "✅ 检测到 JSON 文件变更"
+            else
+              echo "changes=false" >> $GITHUB_OUTPUT
+              echo "ℹ️  无 JSON 文件变更"
+            fi
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  代码已是最新"
+          fi
+
+      - name: Push to origin
+        if: steps.check_changes.outputs.changes == 'true'
+        run: |
+          echo "📤 推送更新到 origin..."
+          git push origin master --force
+          echo "✅ 推送完成"
+
+  sync-to-ecs:
+    needs: sync-upstream
+    if: needs.sync-upstream.outputs.json_changed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ECS_HOST: ${{ secrets.ECS_HOST }}
+      ECS_PORT: ${{ secrets.ECS_PORT || '22' }}
+      ECS_USER: ${{ secrets.ECS_USER }}
+      ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Sync files to Alibaba Cloud ECS
+        run: |
+          echo "📡 开始同步文件到阿里云 ECS..."
+
+          # 检查必要的 Secrets 是否配置
+          if [ -z "$ECS_HOST" ] || [ -z "$ECS_USER" ] || [ -z "$ECS_SSH_KEY" ]; then
+            echo "⏭️  ECS 同步未配置，跳过此步骤"
+            echo "💡 如需启用，请在 GitHub 仓库 Settings > Secrets 中配置："
+            echo "   - ECS_HOST"
+            echo "   - ECS_PORT (可选，默认 22)"
+            echo "   - ECS_USER"
+            echo "   - ECS_SSH_KEY"
+            exit 0
+          fi
+
+          echo "🚀 开始同步文件到阿里云 ECS..."
+
+          # 设置 SSH 密钥
+          mkdir -p ~/.ssh
+          echo "$ECS_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p $ECS_PORT -H $ECS_HOST >> ~/.ssh/known_hosts 2>/dev/null
+
+          # 目标路径
+          TARGET_DIR="/api_data/holiday"
+
+          echo "📂 目标目录: $TARGET_DIR"
+          echo "🖥️  服务器: $ECS_USER@$ECS_HOST:$ECS_PORT"
+
+          # 先在服务器创建目录结构
+          ssh -p $ECS_PORT -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
+            $ECS_USER@$ECS_HOST "mkdir -p $TARGET_DIR"
+
+          # 上传年份 JSON 文件 (2007-2027.json)
+          echo "📤 上传年份 JSON 文件..."
+          for year in {2007..2027}; do
+            if [ -f "$year.json" ]; then
+              scp -P $ECS_PORT -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no \
+                $year.json $ECS_USER@$ECS_HOST:$TARGET_DIR/
+              echo "  ✓ $year.json"
+            fi
+          done
+
+          # 清理私钥
+          rm -f ~/.ssh/id_rsa
+
+          echo "✅ 文件同步完成"
