@@ -5,6 +5,12 @@ on:
   schedule:
     - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      force_sync:
+        description: '强制推送到 ECS (即使无变更)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -71,7 +77,8 @@ jobs:
 
   sync-to-ecs:
     needs: sync-upstream
-    if: needs.sync-upstream.outputs.json_changed == 'true'
+    # 有 JSON 变更 或 手动触发时选择了强制推送
+    if: needs.sync-upstream.outputs.json_changed == 'true' || inputs.force_sync == true
     runs-on: ubuntu-latest
     env:
       ECS_HOST: ${{ secrets.ECS_HOST }}
