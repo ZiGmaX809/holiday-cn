@@ -27,7 +27,7 @@ jobs:
 
       - name: Add upstream remote
         run: |
-          git remote add upstream https://github.com/6ool/holiday-cn.git
+          git remote add upstream https://github.com/NateScarlet/holiday-cn.git
           git fetch upstream
 
       - name: Get current commit
